@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.nc
+*.png
+*.csv
+.DS_Store

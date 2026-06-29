@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "pyrrtm-lite"
+version = "0.1.0"
+description = "Streamlined broadband radiative flux profiles from CF-NetCDF soundings"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20",
+    "scipy>=1.7",
+    "netCDF4>=1.5",
+]
+
+[project.scripts]
+pyrrtm-lite = "pyrrtm_lite:main"
+
+[project.urls]
+Homepage = "https://github.com/vghate/pyrrtm-lite"
+"Parent package" = "https://github.com/vghate/pyrrtm"
