@@ -3,9 +3,9 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.backends.legacy:build"
 
 [project]
-name = "pyrrtm-lite"
-version = "0.1.0"
-description = "Streamlined broadband radiative flux profiles from CF-NetCDF soundings"
+name = "pyrrtm-lite-fixed"
+version = "0.2.0"
+description = "Bug-fixed broadband radiative flux profiles from CF-NetCDF soundings (12 Python translation errors corrected)"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
@@ -20,4 +20,5 @@ pyrrtm-lite = "pyrrtm_lite:main"
 
 [project.urls]
 Homepage = "https://github.com/vghate/pyrrtm-lite"
+"Bug report" = "https://github.com/vghate/pyrrtm-lite/issues"
 "Parent package" = "https://github.com/vghate/pyrrtm"

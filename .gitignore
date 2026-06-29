@@ -1,6 +1,5 @@
 __pycache__/
 *.py[cod]
 *.nc
-*.png
-*.csv
+!data/*.nc
 .DS_Store

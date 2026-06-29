@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-pyrrtm-lite — Streamlined broadband radiative flux profiles.
+pyrrtm-lite (bug-fixed) — Streamlined broadband radiative flux profiles.
 
-Reads a CF-NetCDF sounding and a JSON config file; writes broadband LW and SW
-flux profiles to an output NetCDF.  All config settings are saved as global
-attributes in the output file for full reproducibility.
+This version uses locally fixed LW and SW modules (lw/, sw/) that correct
+12 bugs identified in the original pyrrtm Python port.  See pyrrtmlite_bugs.txt.
 
 Usage
 -----
@@ -19,7 +18,6 @@ Output variables (W/m²)
 Dependencies
 ------------
     numpy, scipy, netCDF4  (standard scientific Python)
-    pyrrtm  (parent package — must be on PYTHONPATH or installed)
 """
 
 import argparse
@@ -27,7 +25,6 @@ import json
 import math
 import multiprocessing
 import os
-import re
 import sys
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -39,55 +36,23 @@ import numpy as np
 
 warnings.filterwarnings('ignore')
 
-# ── Locate pyrrtm ──────────────────────────────────────────────────────────
+# ── Use local bug-fixed modules ────────────────────────────────────────────
 _HERE = Path(__file__).parent
-_PYRRTM_SEARCH = [
-    _HERE.parent / 'pyrrtm',
-    Path.home() / 'Desktop' / 'pyrrtm',
-]
-for _p in _PYRRTM_SEARCH:
-    if (_p / 'pyrrtm').is_dir() and str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
-        break
+sys.path.insert(0, str(_HERE))          # makes "lw" and "sw" importable
+# Also add rrtm_proj so the LW taumol/setcoef sub-imports still resolve
+for _fallback in [Path.home() / 'Desktop' / 'rrtm_proj',
+                  Path.home() / 'Desktop' / 'rrtm_sw_proj']:
+    if _fallback.is_dir() and str(_fallback) not in sys.path:
+        sys.path.append(str(_fallback))
 
-# Try rrtm_proj as fallback for LW coefficients
-_RRTM_LW_SEARCH = [
-    Path.home() / 'Desktop' / 'rrtm_proj',
-]
-for _p in _RRTM_LW_SEARCH:
-    if _p.is_dir() and str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+from lw.run      import run as _lw_run
+from lw.sounding import Sounding as LWSounding
+from lw.std_atm  import gas_vmr_std, T_std, P_std
+from sw.run      import run as _sw_run
+from sw.sounding import SWSounding
 
-try:
-    from pyrrtm.lw.run      import run as _lw_run
-    from pyrrtm.lw.sounding import Sounding as LWSounding
-    from pyrrtm.lw.std_atm  import gas_vmr_std, T_std, P_std
-    from pyrrtm.sw.run      import run as _sw_run
-    from pyrrtm.sw.sounding import SWSounding
-except ImportError as e:
-    sys.exit(f"ERROR: Cannot import pyrrtm — {e}\n"
-             "Add the pyrrtm directory to PYTHONPATH or install it with pip.")
-
-_LW_COEFFS = str(Path(sys.path[0]) / 'pyrrtm' / '..' / 'data' / 'lw_coeffs.nc')
-# find actual coeffs
-for _candidate in [
-    _HERE.parent / 'pyrrtm' / 'data' / 'lw_coeffs.nc',
-    Path.home() / 'Desktop' / 'pyrrtm' / 'data' / 'lw_coeffs.nc',
-    Path.home() / 'Desktop' / 'rrtm_proj' / 'data' / 'coeffs.nc',
-]:
-    if _candidate.exists():
-        _LW_COEFFS = str(_candidate)
-        break
-
-_SW_COEFFS = None
-for _candidate in [
-    _HERE.parent / 'pyrrtm' / 'data' / 'sw_coeffs.nc',
-    Path.home() / 'Desktop' / 'pyrrtm' / 'data' / 'sw_coeffs.nc',
-    Path.home() / 'Desktop' / 'rrtm_sw_proj' / 'data' / 'coeffs.nc',
-]:
-    if _candidate.exists():
-        _SW_COEFFS = str(_candidate)
-        break
+_LW_COEFFS = str(_HERE / 'data' / 'lw_coeffs.nc')
+_SW_COEFFS = str(_HERE / 'data' / 'sw_coeffs.nc')
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -656,7 +621,7 @@ def main():
 
     # ── Global attributes: provenance + full config ───────────────────────
     out.description    = 'pyrrtm-lite broadband radiative flux profiles'
-    out.pyrrtm_version = '0.2.0'
+    out.pyrrtm_version = '0.2.0-fixed'
     out.created        = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
     out.config_file    = str(args.config)
     out.input_file     = str(args.input)
