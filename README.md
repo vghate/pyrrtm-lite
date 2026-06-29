@@ -36,18 +36,28 @@ pyrrtm must be on PYTHONPATH or placed in the parent directory of pyrrtm-lite.
 
 ## Usage
 
-**Step 1** — Copy the template config and edit it:
+The config file can be **JSON** or **NetCDF** — both carry the same settings.
+
+### Option A — JSON config
+
 ```bash
 cp config_template.json my_config.json
-# Edit my_config.json — all _comment_* fields are ignored automatically
+# edit values; _c_* hint lines are ignored automatically
+python pyrrtm_lite.py --config my_config.json --input sounding.nc --output fluxes.nc
 ```
 
-**Step 2** — Run:
+### Option B — NetCDF config
+
 ```bash
-python pyrrtm_lite.py --config my_config.json \
-                      --input  sounding.nc \
-                      --output fluxes.nc
+# generate an editable template
+python pyrrtm_lite.py --make-nc-config my_config.nc
+
+# edit with ncview, xarray, or any NetCDF tool, then run
+python pyrrtm_lite.py --config my_config.nc --input sounding.nc --output fluxes.nc
 ```
+
+In the NetCDF config each setting is a scalar variable with a `description`
+attribute.  Set any variable to **-9999** to use the built-in default.
 
 ## Config fields
 
