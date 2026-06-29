@@ -181,7 +181,7 @@ def make_nc_config(out_path: str) -> None:
                       'Lat/lon = -9999 means read from sounding file.')
 
     def _var(name, section, value, description, units=''):
-        v = ds.createVariable(name, 'f4')
+        v = ds.createVariable(name, 'f8')   # float64 — avoids float32 precision display ugliness
         v[:] = value if value is not None else -9999.0
         v.section     = section
         v.description = description
@@ -216,8 +216,8 @@ def make_nc_config(out_path: str) -> None:
 
     ds.close()
     print(f'NetCDF config template written: {out_path}')
-    print('Edit variable values with ncdump/ncview/xarray, then run:')
-    print(f'  python pyrrtm_lite.py --config {out_path} --input sounding.nc --output fluxes.nc')
+    print('Edit variable values with ncview/xarray/any NetCDF tool, then run:')
+    print(f'  python pyrrtm_lite.py --config {out_path} --input sounding.nc')
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -595,7 +595,7 @@ def main():
         ))
     parser.add_argument('--config',         help='Config file (.json or .nc)')
     parser.add_argument('--input',          help='Input sounding NetCDF')
-    parser.add_argument('--output',         help='Output flux NetCDF')
+    parser.add_argument('--output',         help='Output flux NetCDF (default: <input_stem>_fluxes.nc)')
     parser.add_argument('--make-nc-config', metavar='PATH',
                         help='Generate a template NetCDF config at PATH and exit')
     args = parser.parse_args()
@@ -605,8 +605,14 @@ def main():
         make_nc_config(args.make_nc_config)
         return
 
-    if not args.config or not args.input or not args.output:
-        parser.error('--config, --input, and --output are required unless --make-nc-config is used')
+    if not args.config or not args.input:
+        parser.error('--config and --input are required unless --make-nc-config is used')
+
+    # Default output path: same directory as input, stem + _fluxes.nc
+    if not args.output:
+        inp = Path(args.input)
+        args.output = str(inp.parent / (inp.stem + '_fluxes.nc'))
+        print(f"Output: {args.output}  (default)")
 
     # ── Config ────────────────────────────────────────────────────────────
     cfg = load_config(args.config)
