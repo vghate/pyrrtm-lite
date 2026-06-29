@@ -1,58 +1,43 @@
 {
-    "_comment": "pyrrtm-lite configuration file. Lines starting with _comment are ignored by the reader.",
-    "_comment_usage": "Copy this file, fill in your values, then run: python pyrrtm_lite.py --config myconfig.json --input sounding.nc --output fluxes.nc",
-
     "surface": {
-        "_comment": "Surface boundary conditions applied to every profile",
-
         "sw_albedo": 0.15,
-        "_comment_sw_albedo": "Broadband SW surface albedo [0-1, dimensionless]. Nominal values: ocean 0.06, grass/cropland 0.15-0.25, forest 0.10-0.15, desert/bare soil 0.25-0.40, fresh snow 0.80-0.90",
+        "_c_sw_albedo": "0–1  |  ocean 0.06  grass 0.15  desert 0.35  snow 0.85",
 
         "skin_temperature_C": null,
-        "_comment_skin_temp": "Surface skin temperature [°C]. Set null to use the lowest-level air temperature from the sounding (reasonable for land; may be off over ocean)"
+        "_c_skin_temp": "°C  |  null = use lowest sounding level"
     },
 
     "gases": {
-        "_comment": "Greenhouse gas volume mixing ratios applied uniformly to all levels. USSA76 profiles are used for O3; N2O and CO are set to USSA76 defaults.",
-
         "CO2_ppm": 422.0,
-        "_comment_CO2": "CO2 [ppm]. Current atmosphere ~422; pre-industrial 280; scenario 2xCO2 560; 4xCO2 1120",
+        "_c_CO2": "ppm  |  current ~422  pre-industrial 280  2×CO2 560",
 
         "CH4_ppm": 1.9,
-        "_comment_CH4": "CH4 [ppm]. Current atmosphere ~1.9; pre-industrial 0.72; high-emission scenario ~3.5"
+        "_c_CH4": "ppm  |  current ~1.9  pre-industrial 0.72"
     },
 
     "solar": {
-        "_comment": "Solar geometry. Latitude/longitude are used to compute solar zenith angle from the sounding time stamps. If fixed_sza_deg is set it overrides the computed angle (useful for single-profile sensitivity tests).",
-
         "latitude_deg": null,
-        "_comment_latitude": "Site latitude [degrees N]. Set null to read from the sounding NetCDF (variable 'lat')",
+        "_c_lat": "°N  |  null = read from sounding file",
 
         "longitude_deg": null,
-        "_comment_longitude": "Site longitude [degrees E, -180 to 180]. Set null to read from the sounding NetCDF (variable 'lon')",
+        "_c_lon": "°E  |  null = read from sounding file",
 
         "fixed_sza_deg": null,
-        "_comment_fixed_sza": "If not null, use this solar zenith angle [degrees] for every profile instead of computing it from time+location. Range 0 (overhead) to 90 (horizon). Profiles where SZA>=90 are set to zero SW flux regardless."
+        "_c_sza": "degrees  |  null = compute from time+location  |  0=overhead  90=horizon"
     },
 
     "vertical_grid": {
-        "_comment": "Output flux profiles are reported on a uniform grid below 15 km and a 1-km grid from 15 to 60 km. The sounding is interpolated onto this grid before running the model.",
-
         "resolution_below_15km_km": 0.5,
-        "_comment_resolution": "Vertical resolution of output flux profiles below 15 km [km]. Nominal values: 0.25 (fine, ~120 levels total), 0.5 (standard, ~76 levels), 1.0 (coarse, ~60 levels). Finer resolution increases run time linearly."
+        "_c_res": "km  |  0.25 fine  0.5 standard  1.0 coarse  |  above 15 km always 1 km to 50 km"
     },
 
     "output": {
-        "_comment": "Output content options",
-
         "save_clearsky": true,
-        "_comment_clearsky": "true = write both all-sky and clear-sky flux profiles (lw_dn, lw_up, sw_dn, sw_up AND lw_dn_clr, lw_up_clr, sw_dn_clr, sw_up_clr). false = all-sky only. Clear-sky run doubles compute time."
+        "_c_clearsky": "true = also write lw/sw _clr variables  |  false = all-sky only"
     },
 
     "processing": {
-        "_comment": "Parallel processing options",
-
         "n_cpu": 4,
-        "_comment_cpu": "Number of CPU cores to use. -1 = all logical cores on the machine. Recommended: 4-8 for a workstation, 16-32 for a cluster node. Set 1 to disable parallelism (useful for debugging)."
+        "_c_cpu": "cores  |  -1 = all available"
     }
 }
