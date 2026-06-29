@@ -2,30 +2,19 @@
 """
 pyrrtm-lite — Streamlined broadband radiative flux profiles.
 
-Reads a CF-NetCDF sounding and a config file (JSON or NetCDF); writes broadband
-LW and SW flux profiles to an output NetCDF.
+Reads a CF-NetCDF sounding and a JSON config file; writes broadband LW and SW
+flux profiles to an output NetCDF.  All config settings are saved as global
+attributes in the output file for full reproducibility.
 
 Usage
 -----
-    # Run with JSON config
+    python pyrrtm_lite.py --config config.json --input sounding.nc
     python pyrrtm_lite.py --config config.json --input sounding.nc --output fluxes.nc
-
-    # Run with NetCDF config
-    python pyrrtm_lite.py --config config.nc --input sounding.nc --output fluxes.nc
-
-    # Generate a template NetCDF config
-    python pyrrtm_lite.py --make-nc-config config_template.nc
-
-Config formats
---------------
-JSON (.json) : human-editable key-value file with _c_ hint fields (see config_template.json)
-NetCDF (.nc) : each setting is a scalar variable with a 'description' attribute;
-               generate a template with --make-nc-config
 
 Output variables (W/m²)
 ------------------------
-    lw_dn, lw_up, sw_dn, sw_up          all-sky broadband fluxes
-    lw_dn_clr, lw_up_clr, sw_dn_clr, sw_up_clr   clear-sky (if save_clearsky=1)
+    lw_dn, lw_up, sw_dn, sw_up                       all-sky broadband fluxes
+    lw_dn_clr, lw_up_clr, sw_dn_clr, sw_up_clr       clear-sky (if save_clearsky=true)
 
 Dependencies
 ------------
@@ -102,10 +91,9 @@ for _candidate in [
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# Config loader — JSON or NetCDF
+# Config loader (JSON only)
 # ════════════════════════════════════════════════════════════════════════════
 
-# Default config values — used when a key is absent from the config file
 _DEFAULTS = {
     'surface':       {'sw_albedo': 0.15, 'skin_temperature_C': None},
     'gases':         {'CO2_ppm': 422.0,  'CH4_ppm': 1.9},
@@ -116,108 +104,21 @@ _DEFAULTS = {
 }
 
 def load_config(path: str) -> dict:
-    """
-    Load config from a JSON or NetCDF file.
-
-    JSON: nested dict; keys starting with '_c' are stripped (hint comments).
-    NetCDF: each scalar variable maps to a config setting by name; the
-            section is inferred from a 'section' attribute on each variable,
-            or from the variable name prefix before the first '_'.
-    """
-    p = Path(path)
-    if p.suffix.lower() in ('.nc', '.nc4', '.cdf', '.netcdf'):
-        return _load_nc_config(path)
-    return _load_json_config(path)
-
-
-def _load_json_config(path: str) -> dict:
+    """Load JSON config; strip _c_* hint keys; fill missing keys from defaults."""
     with open(path) as fh:
         data = json.loads(fh.read())
 
     def _strip(obj):
         if isinstance(obj, dict):
-            return {k: _strip(v) for k, v in obj.items()
-                    if not k.startswith('_c')}
+            return {k: _strip(v) for k, v in obj.items() if not k.startswith('_c')}
         return obj
 
     cfg = _strip(data)
-    # Fill any missing sections/keys from defaults
     for section, defaults in _DEFAULTS.items():
         cfg.setdefault(section, {})
         for key, val in defaults.items():
             cfg[section].setdefault(key, val)
     return cfg
-
-
-def _load_nc_config(path: str) -> dict:
-    """Read a NetCDF config file and return the same nested-dict structure as JSON."""
-    import copy
-    cfg = copy.deepcopy(_DEFAULTS)
-
-    ds = nc.Dataset(path, 'r')
-    for vname, var in ds.variables.items():
-        # Section is stored as a variable attribute, or derived from name prefix
-        section = getattr(var, 'section', None) or vname.split('_')[0]
-        if section not in cfg:
-            continue
-        raw = var[:]
-        # Scalar variable
-        val = float(raw) if np.ndim(raw) == 0 else float(raw.flat[0])
-        # Map special sentinel values: -9999 → None
-        if val == -9999.0:
-            val = None
-        cfg[section][vname] = val
-    ds.close()
-
-    return cfg
-
-
-def make_nc_config(out_path: str) -> None:
-    """Write a template NetCDF config file with descriptions and default values."""
-    ds = nc.Dataset(out_path, 'w', format='NETCDF4')
-    ds.title       = 'pyrrtm-lite configuration'
-    ds.description = ('Edit the variable values below. '
-                      'Set a variable to -9999 to use the built-in default. '
-                      'Lat/lon = -9999 means read from sounding file.')
-
-    def _var(name, section, value, description, units=''):
-        v = ds.createVariable(name, 'f8')   # float64 — avoids float32 precision display ugliness
-        v[:] = value if value is not None else -9999.0
-        v.section     = section
-        v.description = description
-        v.units       = units
-        if value is None:
-            v.note = '-9999 = use default / read from sounding'
-
-    # surface
-    _var('sw_albedo',           'surface', 0.15,   '0-1  |  ocean 0.06  grass 0.15  desert 0.35  snow 0.85')
-    _var('skin_temperature_C',  'surface', -9999,  'Surface skin temperature. -9999 = use lowest sounding level', 'degC')
-
-    # gases
-    _var('CO2_ppm', 'gases', 422.0, 'CO2 mixing ratio  |  current ~422  pre-industrial 280  2xCO2 560', 'ppm')
-    _var('CH4_ppm', 'gases',   1.9, 'CH4 mixing ratio  |  current ~1.9  pre-industrial 0.72', 'ppm')
-
-    # solar
-    _var('latitude_deg',  'solar', -9999, 'Site latitude. -9999 = read from sounding', 'degrees_north')
-    _var('longitude_deg', 'solar', -9999, 'Site longitude. -9999 = read from sounding', 'degrees_east')
-    _var('fixed_sza_deg', 'solar', -9999, 'Fixed solar zenith angle. -9999 = compute from time+location', 'degrees')
-
-    # vertical_grid
-    _var('resolution_below_15km_km', 'vertical_grid', 0.5,
-         'Output vertical resolution below 15 km  |  0.25 fine  0.5 standard  1.0 coarse', 'km')
-
-    # output
-    _var('save_clearsky', 'output', 1.0,
-         '1 = also write _clr (clear-sky) flux variables  |  0 = all-sky only')
-
-    # processing
-    _var('n_cpu', 'processing', 4.0,
-         'CPU cores for parallel processing  |  -1 = all available')
-
-    ds.close()
-    print(f'NetCDF config template written: {out_path}')
-    print('Edit variable values with ncview/xarray/any NetCDF tool, then run:')
-    print(f'  python pyrrtm_lite.py --config {out_path} --input sounding.nc')
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -588,25 +489,14 @@ def main():
         description='pyrrtm-lite: broadband flux profiles from CF-NetCDF soundings.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            'Examples:\n'
-            '  python pyrrtm_lite.py --make-nc-config config.nc\n'
-            '  python pyrrtm_lite.py --config config.nc   --input sounding.nc --output fluxes.nc\n'
+            'Example:\n'
+            '  python pyrrtm_lite.py --config config.json --input sounding.nc\n'
             '  python pyrrtm_lite.py --config config.json --input sounding.nc --output fluxes.nc'
         ))
-    parser.add_argument('--config',         help='Config file (.json or .nc)')
-    parser.add_argument('--input',          help='Input sounding NetCDF')
-    parser.add_argument('--output',         help='Output flux NetCDF (default: <input_stem>_fluxes.nc)')
-    parser.add_argument('--make-nc-config', metavar='PATH',
-                        help='Generate a template NetCDF config at PATH and exit')
+    parser.add_argument('--config', required=True, help='JSON config file')
+    parser.add_argument('--input',  required=True, help='Input sounding NetCDF')
+    parser.add_argument('--output',               help='Output NetCDF (default: <input_stem>_fluxes.nc)')
     args = parser.parse_args()
-
-    # ── Template generation mode ─────────────────────────────────────────
-    if args.make_nc_config:
-        make_nc_config(args.make_nc_config)
-        return
-
-    if not args.config or not args.input:
-        parser.error('--config and --input are required unless --make-nc-config is used')
 
     # Default output path: same directory as input, stem + _fluxes.nc
     if not args.output:
@@ -764,18 +654,41 @@ def main():
         _write('sw_dn_clr', sw_dn_clr, 'Downwelling SW flux (clear-sky)')
         _write('sw_up_clr', sw_up_clr, 'Upwelling SW flux (clear-sky)')
 
-    # Global attributes
-    out.description  = 'pyrrtm-lite broadband radiative flux profiles'
-    out.config_file  = str(args.config)
-    out.input_file   = str(args.input)
-    out.CO2_ppm      = float(cfg['gases']['CO2_ppm'])
-    out.CH4_ppm      = float(cfg['gases']['CH4_ppm'])
-    out.sw_albedo    = float(cfg['surface']['sw_albedo'])
-    out.dz_low_km    = dz_low
-    out.grid_levels  = nlevs
-    out.save_clearsky = str(save_clr)
+    # ── Global attributes: provenance + full config ───────────────────────
+    out.description    = 'pyrrtm-lite broadband radiative flux profiles'
     out.pyrrtm_version = '0.2.0'
-    out.created      = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    out.created        = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    out.config_file    = str(args.config)
+    out.input_file     = str(args.input)
+
+    # Surface
+    out.sw_albedo           = float(cfg['surface']['sw_albedo'])
+    skin = cfg['surface']['skin_temperature_C']
+    out.skin_temperature_C  = float(skin) if skin is not None else 'from_sounding'
+
+    # Gases
+    out.CO2_ppm = float(cfg['gases']['CO2_ppm'])
+    out.CH4_ppm = float(cfg['gases']['CH4_ppm'])
+
+    # Solar
+    out.latitude_deg  = str(cfg['solar']['latitude_deg']  or 'from_sounding')
+    out.longitude_deg = str(cfg['solar']['longitude_deg'] or 'from_sounding')
+    out.fixed_sza_deg = str(cfg['solar']['fixed_sza_deg'] or 'computed')
+
+    # Vertical grid
+    out.resolution_below_15km_km = dz_low
+    out.grid_levels              = nlevs
+    out.grid_top_km              = float(z_out[-1])
+
+    # Output options
+    out.save_clearsky = 'yes' if save_clr else 'no'
+
+    # Processing
+    out.n_cpu_requested = int(cfg['processing']['n_cpu'])
+    out.n_cpu_used      = min(int(cfg['processing']['n_cpu'])
+                              if cfg['processing']['n_cpu'] > 0
+                              else multiprocessing.cpu_count(), ntimes)
+
     out.close()
 
     # ── Summary ───────────────────────────────────────────────────────────
