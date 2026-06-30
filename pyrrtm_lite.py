@@ -64,7 +64,9 @@ _DEFAULTS = {
     'gases':         {'CO2_ppm': 422.0,  'CH4_ppm': 1.9},
     'solar':         {'latitude_deg': None, 'longitude_deg': None, 'fixed_sza_deg': None},
     'vertical_grid': {'resolution_below_15km_km': 0.5},
-    'clouds':        {'iceflag': 3, 're_liq_um_default': 10.0, 're_ice_um_default': 40.0},
+    'cloud':         {'enable': 0, 'iceflag': 3,
+                      're_liq_um_default': 10.0, 're_ice_um_default': 40.0},
+    'aerosol':       {'enable': 0},
     'output':        {'save_clearsky': True},
     'processing':    {'n_cpu': 4},
 }
@@ -107,7 +109,8 @@ def build_output_grid(dz_low_km: float) -> np.ndarray:
 # Sounding reader
 # ════════════════════════════════════════════════════════════════════════════
 
-def read_sounding(nc_path: str):
+def read_sounding(nc_path: str, cloud_enable: bool = False,
+                  aerosol_enable: bool = False):
     """
     Read a CF-NetCDF or ARM interpolated sonde file.
 
@@ -197,51 +200,61 @@ def read_sounding(nc_path: str):
         else:
             sh_raw = np.full_like(p_raw, 0.01 / 1000.0)   # 10 g/kg placeholder
 
-    # ── Cloud fields (optional) ────────────────────────────────────────────
-    # Accepts path [g/m²] or content [g/m³] arrays; content is integrated
-    # over layer thickness using hydrostatic dz = dP/(rho*g).
+    # ── Cloud fields (read only if cloud=1 in config) ─────────────────────
     cloud = None
-    frac = _get(['cloud_fraction', 'cf', 'cldFrac', 'CLDFRA'])
-    lwp  = _get(['lwp', 'liquid_water_path', 'LWP'])
-    iwp  = _get(['iwp', 'ice_water_path',    'IWP'])
-    re_l = _get(['re_liq', 'effective_radius_liquid', 're_liquid', 're_liq_um'])
-    re_i = _get(['re_ice', 'effective_radius_ice', 're_ice_um'])
+    if cloud_enable:
+        lwp  = _get(['lwp', 'liquid_water_path', 'LWP'])
+        iwp  = _get(['iwp', 'ice_water_path',    'IWP'])
+        re_l = _get(['re_liq', 'effective_radius_liquid', 're_liq_um'])
+        re_i = _get(['re_ice', 'effective_radius_ice',    're_ice_um'])
+        frac = _get(['cloud_fraction', 'cf', 'cldFrac',   'CLDFRA'])
 
-    # Water content [g/m³] → path [g/m²]: dz from hydrostatic equation
-    def _content_to_path(wc, p2d, T2d):
-        """wc [g/m³] × dz [m] = path [g/m²].  dz from hydrostatic: dP/(rho*g)."""
-        if wc is None: return None
-        T_K  = T2d + 273.15 if np.nanmean(T2d[np.isfinite(T2d)]) < 100 else T2d
-        P_Pa = p2d * 100.0  if np.nanmean(p2d[p2d > 0]) < 2000    else p2d
-        rho  = P_Pa / (287.0 * np.where(T_K > 50, T_K, 250.0))    # kg/m³ dry air
-        dP   = np.abs(np.diff(P_Pa, axis=-1, append=P_Pa[..., -1:]))
-        dz   = dP / (rho * 9.80665)                                 # m
-        return wc * dz                                               # g/m³ × m = g/m²
+        if lwp is None and iwp is None:
+            raise ValueError(
+                "cloud=1 but sounding has no lwp/iwp variables. "
+                "Add lwp [g/m²] and/or iwp [g/m²] per layer (0 = clear).")
 
-    if lwp is None:
-        wc_liq = _get(['wc_liq', 'liquid_water_content', 'clwc', 'ql'])
-        if wc_liq is not None:
-            lwp = _content_to_path(wc_liq, p_raw, T_raw)
+        zeros = np.zeros_like(lwp if lwp is not None else iwp)
 
-    if iwp is None:
-        wc_ice = _get(['wc_ice', 'ice_water_content', 'ciwc', 'qi'])
-        if wc_ice is not None:
-            iwp = _content_to_path(wc_ice, p_raw, T_raw)
+        # frac: auto-derive from LWP+IWP > 0 if not provided
+        if frac is None:
+            total = np.where(np.isfinite(lwp if lwp is not None else zeros),
+                             np.maximum(lwp if lwp is not None else zeros, 0), 0) + \
+                    np.where(np.isfinite(iwp if iwp is not None else zeros),
+                             np.maximum(iwp if iwp is not None else zeros, 0), 0)
+            frac = np.where(total > 0, 1.0, 0.0)
 
-    # Auto-detect frac from LWP+IWP if not provided (icld logic)
-    if frac is None and (lwp is not None or iwp is not None):
-        liq = lwp if lwp is not None else 0.0
-        ice = iwp if iwp is not None else 0.0
-        total = np.where(np.isfinite(liq), np.maximum(liq, 0), 0) + \
-                np.where(np.isfinite(ice), np.maximum(ice, 0), 0)
-        frac = np.where(total > 0, 1.0, 0.0)
+        cloud = dict(
+            frac    = np.where(np.isfinite(frac), np.clip(frac, 0, 1), 0.0),
+            lwp_gm2 = np.where(np.isfinite(lwp),  np.maximum(lwp, 0), 0.0) if lwp is not None else zeros,
+            re_liq_um = re_l if re_l is not None else np.full_like(zeros, 10.0),
+            iwp_gm2 = np.where(np.isfinite(iwp),  np.maximum(iwp, 0), 0.0) if iwp is not None else zeros,
+            re_ice_um = re_i if re_i is not None else np.full_like(zeros, 40.0),
+        )
 
-    if frac is not None and (lwp is not None or iwp is not None):
-        cloud = dict(frac=frac,
-                     lwp_gm2=np.where(np.isfinite(lwp), np.maximum(lwp, 0), 0) if lwp is not None else np.zeros_like(frac),
-                     re_liq_um=re_l if re_l is not None else np.full_like(frac, 10.0),
-                     iwp_gm2=np.where(np.isfinite(iwp), np.maximum(iwp, 0), 0) if iwp is not None else np.zeros_like(frac),
-                     re_ice_um=re_i if re_i is not None else np.full_like(frac, 40.0))
+    # ── Aerosol fields (read only if aerosol=1 in config) ─────────────────
+    aerosol = None
+    if aerosol_enable:
+        aod = _get(['aod', 'aod_550', 'tau_aer', 'aerosol_od', 'aod_layer'])
+        ssa = _get(['ssa', 'ssa_aer', 'omega_aer', 'single_scatter_albedo'])
+        g   = _get(['g_aer', 'g', 'asy', 'asymmetry_parameter', 'g_asym'])
+
+        if aod is None:
+            raise ValueError(
+                "aerosol=1 but sounding has no aod variable. "
+                "Add aod [0–∞] per layer at 550 nm (0 = aerosol-free).")
+
+        # SSA and g: use provided or sensible continental defaults
+        if ssa is None:
+            ssa = np.full_like(aod, 0.90)   # typical continental mixed
+        if g is None:
+            g   = np.full_like(aod, 0.65)   # typical continental mixed
+
+        aerosol = dict(
+            aod = np.where(np.isfinite(aod), np.maximum(aod, 0), 0.0),
+            ssa = np.where(np.isfinite(ssa), np.clip(ssa, 0, 1),  0.90),
+            g   = np.where(np.isfinite(g),   np.clip(g, -1, 1),   0.65),
+        )
 
     ds.close()
 
@@ -270,7 +283,7 @@ def read_sounding(nc_path: str):
 
     return dict(z_km=z_km, time=time_sec,
                 p_hPa=p_2d, T_C=T_2d, sh_gg=sh_2d,
-                lat=lat, lon=lon, cloud=cloud)
+                lat=lat, lon=lon, cloud=cloud, aerosol=aerosol)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -369,17 +382,17 @@ def _run_one_profile(args):
     Worker function (called by ProcessPoolExecutor).
     Returns dict of broadband fluxes on z_out grid.
     """
-    (z_km, p_hPa, T_C, sh_gg, cloud_row,
+    (z_km, p_hPa, T_C, sh_gg, cloud_row, aerosol_row,
      cfg, sza_deg, lw_coeffs, sw_coeffs) = args
 
-    co2      = cfg['gases']['CO2_ppm']
-    ch4      = cfg['gases']['CH4_ppm']
-    alb      = cfg['surface']['sw_albedo']
-    skin     = cfg['surface'].get('skin_temperature_C', None)
-    save_clr = cfg['output']['save_clearsky']
-    iceflag  = int(cfg.get('clouds', {}).get('iceflag', 3))
-    re_liq_def = float(cfg.get('clouds', {}).get('re_liq_um_default', 10.0))
-    re_ice_def = float(cfg.get('clouds', {}).get('re_ice_um_default', 40.0))
+    co2        = cfg['gases']['CO2_ppm']
+    ch4        = cfg['gases']['CH4_ppm']
+    alb        = cfg['surface']['sw_albedo']
+    skin       = cfg['surface'].get('skin_temperature_C', None)
+    save_clr   = cfg['output']['save_clearsky']
+    iceflag    = int(cfg.get('cloud', {}).get('iceflag', 3))
+    re_liq_def = float(cfg.get('cloud', {}).get('re_liq_um_default', 10.0))
+    re_ice_def = float(cfg.get('cloud', {}).get('re_ice_um_default', 40.0))
 
     nlev    = len(z_km)
     wv_gkg  = sh_gg * 1000.0
@@ -412,6 +425,51 @@ def _run_one_profile(args):
         reice_lev = np.where(iwp_lev > 0, np.maximum(reice_raw, 5.0), re_ice_def)
         has_cloud = (frac_lev.max() > 0.01) and ((lwp_lev + iwp_lev).max() > 0)
 
+    # ── Aerosol objects from per-layer AOD profile ────────────────────────
+    lw_aerosol = None
+    sw_aerosol = None
+
+    if aerosol_row is not None:
+        from lw.aerosol import AerosolLayer, DUST_LW_SCALE, URBAN_LW_SCALE
+        from sw.aerosol import AerosolLayerSW, DUST_SW, URBAN_SW
+
+        # Interpolate AOD, SSA, g to output grid
+        aod_out = np.maximum(np.interp(z_km, aerosol_row['z_km'], aerosol_row['aod']), 0)
+        ssa_out = np.clip(np.interp(z_km, aerosol_row['z_km'], aerosol_row['ssa']), 0, 1)
+        g_out   = np.clip(np.interp(z_km, aerosol_row['z_km'], aerosol_row['g']),  -1, 1)
+
+        # Use layer values (average adjacent levels to get layer mid-values)
+        # aod_out[i] is the value at level i; use it directly as layer AOD
+        nlayers = nlev - 1
+        aod_lay = 0.5 * (aod_out[:-1] + aod_out[1:])   # layer average
+        ssa_lay = 0.5 * (ssa_out[:-1] + ssa_out[1:])
+        g_lay   = 0.5 * (g_out[:-1]   + g_out[1:])
+
+        has_aer = aod_lay.max() > 0
+
+        if has_aer:
+            # LW: absorption OD per band = aod_lay * spectral_scale
+            # Use average of dust + urban (continental mixed) as default shape
+            lw_scale = 0.5 * (DUST_LW_SCALE + URBAN_LW_SCALE)
+            lw_aerosol = [AerosolLayer() for _ in range(nlayers)]
+            for i in range(nlayers):
+                if aod_lay[i] > 0:
+                    # Absorption = AOD × (1 - SSA) × spectral_scale
+                    lw_aerosol[i].tau_abs = aod_lay[i] * (1.0 - ssa_lay[i]) * lw_scale
+
+            # SW: extinction OD, SSA, and g per band
+            # Use average dust+urban spectral shape for tau_scale
+            sw_tau_scale = 0.5 * (DUST_SW['tau_scale'] + URBAN_SW['tau_scale'])
+            sw_ssa_table = 0.5 * (DUST_SW['ssa']       + URBAN_SW['ssa'])
+            sw_aerosol = [AerosolLayerSW() for _ in range(nlayers)]
+            for i in range(nlayers):
+                if aod_lay[i] > 0:
+                    sw_aerosol[i].tau_ext = aod_lay[i] * sw_tau_scale
+                    sw_aerosol[i].ssa     = np.where(ssa_lay[i] > 0,
+                                                     ssa_lay[i] * np.ones(14),
+                                                     sw_ssa_table)
+                    sw_aerosol[i].g       = g_lay[i] * np.ones(14)
+
     # ── LW all-sky ────────────────────────────────────────────────────────
     snd = LWSounding(
         z_km=z_km, T_C=T_C, P_hPa=p_hPa, wv_gkg=wv_gkg,
@@ -420,7 +478,7 @@ def _run_one_profile(args):
         iwp_gm2=iwp_lev, re_ice_um=reice_lev,
         iceflag=iceflag,
     )
-    r_lw = _lw_run(sounding=snd, coeffs_path=lw_coeffs)
+    r_lw = _lw_run(sounding=snd, aerosol=lw_aerosol, coeffs_path=lw_coeffs)
 
     # totdflux/totuflux have nlev points; index 0 = surface, -1 = TOA
     lw_dn = r_lw['totdflux']   # (nlev,)
@@ -454,7 +512,7 @@ def _run_one_profile(args):
             iwp_gm2=iwp_lev, re_ice_um=reice_lev,
             iceflag=2,
         )
-        r_sw  = _sw_run(sounding=ssnd, coeffs_path=sw_coeffs)
+        r_sw  = _sw_run(sounding=ssnd, aerosol=sw_aerosol, coeffs_path=sw_coeffs)
         sw_dn = r_sw['totdflux']
         sw_up = r_sw['totuflux']
 
@@ -518,11 +576,16 @@ def main():
     print(f"pyrrtm-lite  |  dz<15km={dz_low}km  cores={n_cpu}  "
           f"clear-sky={'yes' if save_clr else 'no'}")
 
-    # ── Read sounding ─────────────────────────────────────────────────────
+    # ── Read sounding (pass enable flags so missing vars raise clearly) ──────
+    cloud_en   = bool(int(cfg.get('cloud',   {}).get('enable',  0)))
+    aerosol_en = bool(int(cfg.get('aerosol', {}).get('enable',  0)))
     print(f"Reading sounding: {args.input}")
-    snd = read_sounding(args.input)
+    snd = read_sounding(args.input,
+                        cloud_enable=cloud_en, aerosol_enable=aerosol_en)
     ntimes = snd['p_hPa'].shape[0]
-    print(f"  {ntimes} profiles × {len(snd['z_km'])} source levels")
+    print(f"  {ntimes} profiles × {len(snd['z_km'])} source levels"
+          f"  | cloud={'on' if cloud_en else 'off'}"
+          f"  | aerosol={'on' if aerosol_en else 'off'}")
 
     # ── Build output grid ─────────────────────────────────────────────────
     z_out = build_output_grid(dz_low)
@@ -548,18 +611,32 @@ def main():
             z_out,
         )
 
-        # Cloud row for this time step
+        def _time_slice(arr, ti):
+            """Return 1-D array for time index ti (or the array itself if 1-D)."""
+            return arr[min(ti, arr.shape[0]-1)] if arr.ndim > 1 else arr
+
+        # Cloud row
         cloud_row = None
         if snd['cloud'] is not None:
             c = snd['cloud']
-            idx = min(ti, c['frac'].shape[0] - 1)
             cloud_row = dict(
                 z_km=snd['z_km'],
-                frac=c['frac'][idx] if c['frac'].ndim > 1 else c['frac'],
-                lwp=c['lwp_gm2'][idx] if c['lwp_gm2'].ndim > 1 else c['lwp_gm2'],
-                re_liq=c['re_liq_um'][idx] if c['re_liq_um'].ndim > 1 else c['re_liq_um'],
-                iwp=c['iwp_gm2'][idx] if c['iwp_gm2'].ndim > 1 else c['iwp_gm2'],
-                re_ice=c['re_ice_um'][idx] if c['re_ice_um'].ndim > 1 else c['re_ice_um'],
+                frac=_time_slice(c['frac'],     ti),
+                lwp=_time_slice(c['lwp_gm2'],  ti),
+                re_liq=_time_slice(c['re_liq_um'], ti),
+                iwp=_time_slice(c['iwp_gm2'],  ti),
+                re_ice=_time_slice(c['re_ice_um'], ti),
+            )
+
+        # Aerosol row
+        aerosol_row = None
+        if snd['aerosol'] is not None:
+            a = snd['aerosol']
+            aerosol_row = dict(
+                z_km=snd['z_km'],
+                aod=_time_slice(a['aod'], ti),
+                ssa=_time_slice(a['ssa'], ti),
+                g=_time_slice(a['g'],   ti),
             )
 
         # SZA
@@ -571,7 +648,7 @@ def main():
             except Exception:
                 sza = 90.0
 
-        worker_args.append((z_km, p_hPa, T_C, sh_gg, cloud_row,
+        worker_args.append((z_km, p_hPa, T_C, sh_gg, cloud_row, aerosol_row,
                              cfg, sza, _LW_COEFFS, _SW_COEFFS))
 
     # ── Run (parallel or serial) ──────────────────────────────────────────
@@ -674,13 +751,14 @@ def main():
     out.CO2_ppm = float(cfg['gases']['CO2_ppm'])
     out.CH4_ppm = float(cfg['gases']['CH4_ppm'])
 
-    # Cloud parameterization settings
-    out.cloud_inflag   = 2                 # always: compute tau from LWP/IWP + re
-    out.cloud_liqflag  = 1                 # always: Hu & Stamnes liquid
-    out.cloud_iceflag  = int(cfg.get('clouds', {}).get('iceflag', 3))
-    out.cloud_re_liq_um_default = float(cfg.get('clouds', {}).get('re_liq_um_default', 10.0))
-    out.cloud_re_ice_um_default = float(cfg.get('clouds', {}).get('re_ice_um_default', 40.0))
-    out.cloud_fields_in_sounding = 'yes' if snd.get('cloud') is not None else 'no'
+    # Cloud / aerosol settings
+    out.cloud_enable   = 'yes' if cloud_en else 'no'
+    out.cloud_inflag   = 2    # INFLAG=2: compute tau from LWP/IWP + re
+    out.cloud_liqflag  = 1    # LIQFLAG=1: Hu & Stamnes liquid
+    out.cloud_iceflag  = int(cfg.get('cloud', {}).get('iceflag', 3))
+    out.cloud_re_liq_default_um = float(cfg.get('cloud', {}).get('re_liq_um_default', 10.0))
+    out.cloud_re_ice_default_um = float(cfg.get('cloud', {}).get('re_ice_um_default', 40.0))
+    out.aerosol_enable = 'yes' if aerosol_en else 'no'
 
     # Solar
     out.latitude_deg  = str(cfg['solar']['latitude_deg']  or 'from_sounding')

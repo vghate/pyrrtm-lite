@@ -26,15 +26,25 @@
         "_c_sza": "degrees  |  null = compute from time+location  |  0=overhead  90=horizon"
     },
 
-    "clouds": {
+    "cloud": {
+        "enable": 0,
+        "_c_enable": "0 = clear-sky  |  1 = read cloud properties from sounding NetCDF",
+        "_c_sounding_vars": "sounding must contain: lwp [g/m²], iwp [g/m²], re_liq [µm], re_ice [µm], cloud_fraction [0–1]  |  set 0 for aerosol-free layers",
+
         "iceflag": 3,
         "_c_iceflag": "2 = Streamer/Fu1996 (re_ice 5–131 µm)  |  3 = Fu1998 generalized D_ge (5–140 µm)",
 
         "re_liq_um_default": 10.0,
-        "_c_re_liq": "µm  |  liquid droplet effective radius when not in sounding  |  typical 5–15 µm",
+        "_c_re_liq": "µm  |  used when re_liq absent from sounding  |  typical 5–15 µm",
 
         "re_ice_um_default": 40.0,
-        "_c_re_ice": "µm  |  ice crystal effective radius/D_ge when not in sounding  |  typical 20–80 µm"
+        "_c_re_ice": "µm  |  used when re_ice absent from sounding  |  typical 20–80 µm"
+    },
+
+    "aerosol": {
+        "enable": 0,
+        "_c_enable": "0 = no aerosol  |  1 = read aerosol properties from sounding NetCDF",
+        "_c_sounding_vars": "sounding must contain: aod [dimensionless, at 550 nm], ssa [0–1], g [−1 to 1]  |  set 0 for aerosol-free layers"
     },
 
     "vertical_grid": {
