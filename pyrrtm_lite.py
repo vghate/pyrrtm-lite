@@ -17,22 +17,24 @@ Output variables (W/m²)
 
 Dependencies
 ------------
-    numpy, scipy, netCDF4  (standard scientific Python)
+    numpy, scipy, netCDF4, pvlib  (standard scientific Python)
 """
 
 import argparse
 import json
-import math
 import multiprocessing
 import os
 import sys
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime, timezone
 from pathlib import Path
+
+from datetime import datetime, timezone
 
 import netCDF4 as nc
 import numpy as np
+import pandas as pd
+import pvlib
 
 warnings.filterwarnings('ignore')
 
@@ -62,7 +64,7 @@ _SW_COEFFS = str(_HERE / 'data' / 'sw_coeffs.nc')
 _DEFAULTS = {
     'surface':       {'sw_albedo': 0.15, 'skin_temperature_C': None},
     'gases':         {'CO2_ppm': 422.0,  'CH4_ppm': 1.9},
-    'solar':         {'latitude_deg': None, 'longitude_deg': None, 'fixed_sza_deg': None},
+    'solar':         {'latitude_deg': None, 'longitude_deg': None},
     'vertical_grid': {'resolution_below_15km_km': 0.5},
     'cloud':         {'enable': 0, 'iceflag': 3,
                       're_liq_um_default': 10.0, 're_ice_um_default': 40.0},
@@ -292,35 +294,13 @@ def read_sounding(nc_path: str, cloud_enable: bool = False,
 
 def solar_zenith(unix_sec: float, lat_deg: float, lon_deg: float) -> float:
     """
-    Compute solar zenith angle [degrees] for a given UTC Unix timestamp
-    and geographic location. Uses the Spencer (1971) / Michalsky (1988)
-    algorithm; accurate to ~0.01° for most purposes.
+    Compute solar zenith angle [degrees] using pvlib (NREL SPA algorithm).
+    Returns the geometric (true) zenith — no atmospheric refraction correction,
+    since RRTM handles atmospheric effects internally.
     """
-    dt  = datetime.fromtimestamp(unix_sec, tz=timezone.utc)
-    doy = dt.timetuple().tm_yday
-    hour_utc = dt.hour + dt.minute / 60.0 + dt.second / 3600.0
-
-    B  = 2 * math.pi * (doy - 1) / 365.0
-    # Equation of time [minutes]
-    eot = 229.18 * (0.000075 + 0.001868 * math.cos(B)
-                    - 0.032077 * math.sin(B)
-                    - 0.014615 * math.cos(2*B)
-                    - 0.04089  * math.sin(2*B))
-    # Solar declination [rad]
-    dec = (0.006918 - 0.399912 * math.cos(B)
-           + 0.070257 * math.sin(B)
-           - 0.006758 * math.cos(2*B)
-           + 0.000907 * math.sin(2*B)
-           - 0.002697 * math.cos(3*B)
-           + 0.00148  * math.sin(3*B))
-    # True solar time [hours]
-    tst  = hour_utc + lon_deg / 15.0 + eot / 60.0
-    ha   = math.radians((tst - 12.0) * 15.0)   # hour angle [rad]
-    lat  = math.radians(lat_deg)
-    cos_z = (math.sin(lat) * math.sin(dec)
-             + math.cos(lat) * math.cos(dec) * math.cos(ha))
-    cos_z = max(-1.0, min(1.0, cos_z))
-    return math.degrees(math.acos(cos_z))
+    t = pd.Timestamp(unix_sec, unit='s', tz='UTC')
+    sp = pvlib.solarposition.get_solarposition(t, lat_deg, lon_deg)
+    return float(sp['zenith'].iloc[0])
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -593,13 +573,15 @@ def main():
     print(f"  Output grid: {nlevs} levels  "
           f"({dz_low} km below 15 km, 1 km above)")
 
-    # ── Lat/lon for SZA ───────────────────────────────────────────────────
+    # ── Lat/lon (required for pvlib SZA) ─────────────────────────────────
     lat = cfg['solar'].get('latitude_deg') or snd.get('lat')
     lon = cfg['solar'].get('longitude_deg') or snd.get('lon')
-    fixed_sza = cfg['solar'].get('fixed_sza_deg')
     if lat is None or lon is None:
-        lat, lon = 36.6, -97.5   # default SGP
-        print(f"  WARN: lat/lon not found — defaulting to SGP ({lat}, {lon})")
+        raise ValueError(
+            "latitude_deg and longitude_deg must be set in the config file. "
+            "SZA is computed from lat/lon + UTC time in the sounding using pvlib."
+        )
+    print(f"  Site: {lat:.3f}°N  {lon:.3f}°E  (SZA via pvlib NREL SPA)")
 
     # ── Build worker args list ────────────────────────────────────────────
     worker_args = []
@@ -639,14 +621,11 @@ def main():
                 g=_time_slice(a['g'],   ti),
             )
 
-        # SZA
-        if fixed_sza is not None:
-            sza = float(fixed_sza)
-        else:
-            try:
-                sza = solar_zenith(float(snd['time'][ti]), lat, lon)
-            except Exception:
-                sza = 90.0
+        # SZA via pvlib (geometric zenith, no refraction correction)
+        try:
+            sza = solar_zenith(float(snd['time'][ti]), lat, lon)
+        except Exception:
+            sza = 90.0   # treat as nighttime on failure
 
         worker_args.append((z_km, p_hPa, T_C, sh_gg, cloud_row, aerosol_row,
                              cfg, sza, _LW_COEFFS, _SW_COEFFS))
@@ -761,9 +740,9 @@ def main():
     out.aerosol_enable = 'yes' if aerosol_en else 'no'
 
     # Solar
-    out.latitude_deg  = str(cfg['solar']['latitude_deg']  or 'from_sounding')
-    out.longitude_deg = str(cfg['solar']['longitude_deg'] or 'from_sounding')
-    out.fixed_sza_deg = str(cfg['solar']['fixed_sza_deg'] or 'computed')
+    out.latitude_deg  = float(lat)
+    out.longitude_deg = float(lon)
+    out.sza_method    = 'pvlib NREL SPA (geometric zenith)'
 
     # Vertical grid
     out.resolution_below_15km_km = dz_low

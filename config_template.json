@@ -16,14 +16,11 @@
     },
 
     "solar": {
-        "latitude_deg": null,
-        "_c_lat": "°N  |  null = read from sounding file",
+        "latitude_deg": 29.67,
+        "_c_lat": "°N  |  site latitude — required for pvlib SZA calculation",
 
-        "longitude_deg": null,
-        "_c_lon": "°E  |  null = read from sounding file",
-
-        "fixed_sza_deg": null,
-        "_c_sza": "degrees  |  null = compute from time+location  |  0=overhead  90=horizon"
+        "longitude_deg": -95.06,
+        "_c_lon": "°E (negative = west)  |  site longitude — required for pvlib SZA calculation"
     },
 
     "cloud": {
