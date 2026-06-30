@@ -64,6 +64,7 @@ _DEFAULTS = {
     'gases':         {'CO2_ppm': 422.0,  'CH4_ppm': 1.9},
     'solar':         {'latitude_deg': None, 'longitude_deg': None, 'fixed_sza_deg': None},
     'vertical_grid': {'resolution_below_15km_km': 0.5},
+    'clouds':        {'iceflag': 3, 're_liq_um_default': 10.0, 're_ice_um_default': 40.0},
     'output':        {'save_clearsky': True},
     'processing':    {'n_cpu': 4},
 }
@@ -196,18 +197,50 @@ def read_sounding(nc_path: str):
         else:
             sh_raw = np.full_like(p_raw, 0.01 / 1000.0)   # 10 g/kg placeholder
 
-    # Cloud fields (optional)
+    # ── Cloud fields (optional) ────────────────────────────────────────────
+    # Accepts path [g/m²] or content [g/m³] arrays; content is integrated
+    # over layer thickness using hydrostatic dz = dP/(rho*g).
     cloud = None
     frac = _get(['cloud_fraction', 'cf', 'cldFrac', 'CLDFRA'])
     lwp  = _get(['lwp', 'liquid_water_path', 'LWP'])
     iwp  = _get(['iwp', 'ice_water_path',    'IWP'])
-    re_l = _get(['re_liq', 'effective_radius_liquid', 're_liquid'])
-    re_i = _get(['re_ice', 'effective_radius_ice'])
+    re_l = _get(['re_liq', 'effective_radius_liquid', 're_liquid', 're_liq_um'])
+    re_i = _get(['re_ice', 'effective_radius_ice', 're_ice_um'])
+
+    # Water content [g/m³] → path [g/m²]: dz from hydrostatic equation
+    def _content_to_path(wc, p2d, T2d):
+        """wc [g/m³] × dz [m] = path [g/m²].  dz from hydrostatic: dP/(rho*g)."""
+        if wc is None: return None
+        T_K  = T2d + 273.15 if np.nanmean(T2d[np.isfinite(T2d)]) < 100 else T2d
+        P_Pa = p2d * 100.0  if np.nanmean(p2d[p2d > 0]) < 2000    else p2d
+        rho  = P_Pa / (287.0 * np.where(T_K > 50, T_K, 250.0))    # kg/m³ dry air
+        dP   = np.abs(np.diff(P_Pa, axis=-1, append=P_Pa[..., -1:]))
+        dz   = dP / (rho * 9.80665)                                 # m
+        return wc * dz                                               # g/m³ × m = g/m²
+
+    if lwp is None:
+        wc_liq = _get(['wc_liq', 'liquid_water_content', 'clwc', 'ql'])
+        if wc_liq is not None:
+            lwp = _content_to_path(wc_liq, p_raw, T_raw)
+
+    if iwp is None:
+        wc_ice = _get(['wc_ice', 'ice_water_content', 'ciwc', 'qi'])
+        if wc_ice is not None:
+            iwp = _content_to_path(wc_ice, p_raw, T_raw)
+
+    # Auto-detect frac from LWP+IWP if not provided (icld logic)
+    if frac is None and (lwp is not None or iwp is not None):
+        liq = lwp if lwp is not None else 0.0
+        ice = iwp if iwp is not None else 0.0
+        total = np.where(np.isfinite(liq), np.maximum(liq, 0), 0) + \
+                np.where(np.isfinite(ice), np.maximum(ice, 0), 0)
+        frac = np.where(total > 0, 1.0, 0.0)
+
     if frac is not None and (lwp is not None or iwp is not None):
         cloud = dict(frac=frac,
-                     lwp_gm2=lwp if lwp is not None else np.zeros_like(frac),
+                     lwp_gm2=np.where(np.isfinite(lwp), np.maximum(lwp, 0), 0) if lwp is not None else np.zeros_like(frac),
                      re_liq_um=re_l if re_l is not None else np.full_like(frac, 10.0),
-                     iwp_gm2=iwp if iwp is not None else np.zeros_like(frac),
+                     iwp_gm2=np.where(np.isfinite(iwp), np.maximum(iwp, 0), 0) if iwp is not None else np.zeros_like(frac),
                      re_ice_um=re_i if re_i is not None else np.full_like(frac, 40.0))
 
     ds.close()
@@ -339,11 +372,14 @@ def _run_one_profile(args):
     (z_km, p_hPa, T_C, sh_gg, cloud_row,
      cfg, sza_deg, lw_coeffs, sw_coeffs) = args
 
-    co2  = cfg['gases']['CO2_ppm']
-    ch4  = cfg['gases']['CH4_ppm']
-    alb  = cfg['surface']['sw_albedo']
-    skin = cfg['surface'].get('skin_temperature_C', None)
+    co2      = cfg['gases']['CO2_ppm']
+    ch4      = cfg['gases']['CH4_ppm']
+    alb      = cfg['surface']['sw_albedo']
+    skin     = cfg['surface'].get('skin_temperature_C', None)
     save_clr = cfg['output']['save_clearsky']
+    iceflag  = int(cfg.get('clouds', {}).get('iceflag', 3))
+    re_liq_def = float(cfg.get('clouds', {}).get('re_liq_um_default', 10.0))
+    re_ice_def = float(cfg.get('clouds', {}).get('re_ice_um_default', 40.0))
 
     nlev    = len(z_km)
     wv_gkg  = sh_gg * 1000.0
@@ -366,12 +402,15 @@ def _run_one_profile(args):
     has_cloud  = False
 
     if cloud_row is not None:
-        frac_lev   = np.clip(np.interp(z_km, cloud_row['z_km'], cloud_row['frac']),   0, 1)
-        lwp_lev    = np.maximum(np.interp(z_km, cloud_row['z_km'], cloud_row['lwp']),  0)
-        reliq_lev  = np.maximum(np.interp(z_km, cloud_row['z_km'], cloud_row['re_liq']), 1)
-        iwp_lev    = np.maximum(np.interp(z_km, cloud_row['z_km'], cloud_row['iwp']),  0)
-        reice_lev  = np.maximum(np.interp(z_km, cloud_row['z_km'], cloud_row['re_ice']), 1)
-        has_cloud  = frac_lev.max() > 0.01
+        frac_lev  = np.clip(np.interp(z_km, cloud_row['z_km'], cloud_row['frac']), 0, 1)
+        lwp_lev   = np.maximum(np.interp(z_km, cloud_row['z_km'], cloud_row['lwp']),  0)
+        iwp_lev   = np.maximum(np.interp(z_km, cloud_row['z_km'], cloud_row['iwp']),  0)
+        # Effective radius: use provided values where cloud exists, default elsewhere
+        reliq_raw = np.interp(z_km, cloud_row['z_km'], cloud_row['re_liq'])
+        reice_raw = np.interp(z_km, cloud_row['z_km'], cloud_row['re_ice'])
+        reliq_lev = np.where(lwp_lev > 0, np.maximum(reliq_raw, 2.5), re_liq_def)
+        reice_lev = np.where(iwp_lev > 0, np.maximum(reice_raw, 5.0), re_ice_def)
+        has_cloud = (frac_lev.max() > 0.01) and ((lwp_lev + iwp_lev).max() > 0)
 
     # ── LW all-sky ────────────────────────────────────────────────────────
     snd = LWSounding(
@@ -379,7 +418,7 @@ def _run_one_profile(args):
         gas_ppm=gas_ppm, tbound_C=T_sfc,
         frac=frac_lev, lwp_gm2=lwp_lev, re_liq_um=reliq_lev,
         iwp_gm2=iwp_lev, re_ice_um=reice_lev,
-        iceflag=2,
+        iceflag=iceflag,
     )
     r_lw = _lw_run(sounding=snd, coeffs_path=lw_coeffs)
 
@@ -634,6 +673,14 @@ def main():
     # Gases
     out.CO2_ppm = float(cfg['gases']['CO2_ppm'])
     out.CH4_ppm = float(cfg['gases']['CH4_ppm'])
+
+    # Cloud parameterization settings
+    out.cloud_inflag   = 2                 # always: compute tau from LWP/IWP + re
+    out.cloud_liqflag  = 1                 # always: Hu & Stamnes liquid
+    out.cloud_iceflag  = int(cfg.get('clouds', {}).get('iceflag', 3))
+    out.cloud_re_liq_um_default = float(cfg.get('clouds', {}).get('re_liq_um_default', 10.0))
+    out.cloud_re_ice_um_default = float(cfg.get('clouds', {}).get('re_ice_um_default', 40.0))
+    out.cloud_fields_in_sounding = 'yes' if snd.get('cloud') is not None else 'no'
 
     # Solar
     out.latitude_deg  = str(cfg['solar']['latitude_deg']  or 'from_sounding')

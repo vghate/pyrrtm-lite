@@ -26,6 +26,17 @@
         "_c_sza": "degrees  |  null = compute from time+location  |  0=overhead  90=horizon"
     },
 
+    "clouds": {
+        "iceflag": 3,
+        "_c_iceflag": "2 = Streamer/Fu1996 (re_ice 5–131 µm)  |  3 = Fu1998 generalized D_ge (5–140 µm)",
+
+        "re_liq_um_default": 10.0,
+        "_c_re_liq": "µm  |  liquid droplet effective radius when not in sounding  |  typical 5–15 µm",
+
+        "re_ice_um_default": 40.0,
+        "_c_re_ice": "µm  |  ice crystal effective radius/D_ge when not in sounding  |  typical 20–80 µm"
+    },
+
     "vertical_grid": {
         "resolution_below_15km_km": 0.5,
         "_c_res": "km  |  0.25 fine  0.5 standard  1.0 coarse  |  above 15 km always 1 km to 50 km"
