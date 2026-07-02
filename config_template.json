@@ -2,9 +2,7 @@
     "surface": {
         "sw_albedo": 0.15,
         "_c_sw_albedo": "0–1  |  ocean 0.06  grass 0.15  desert 0.35  snow 0.85",
-
-        "skin_temperature_C": null,
-        "_c_skin_temp": "°C  |  null = use lowest sounding level"
+        "_c_skin_temp": "skin_temperature_C is read from the sounding NetCDF (variable: skin_temperature, T_skin, tskin, or surface_temperature). If absent, lowest-level air temperature is used."
     },
 
     "gases": {
@@ -26,7 +24,7 @@
     "cloud": {
         "enable": 0,
         "_c_enable": "0 = clear-sky  |  1 = read cloud properties from sounding NetCDF",
-        "_c_sounding_vars": "sounding must contain: lwp [g/m²], iwp [g/m²], re_liq [µm], re_ice [µm], cloud_fraction [0–1]  |  set 0 for aerosol-free layers",
+        "_c_sounding_vars": "sounding must contain: lwp [g/m²], iwp [g/m²], re_liq [µm], re_ice [µm], cloud_fraction [0–1]  |  set 0 for cloud-free layers",
 
         "iceflag": 3,
         "_c_iceflag": "2 = Streamer/Fu1996 (re_ice 5–131 µm)  |  3 = Fu1998 generalized D_ge (5–140 µm)",

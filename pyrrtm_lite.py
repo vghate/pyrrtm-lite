@@ -62,7 +62,7 @@ _SW_COEFFS = str(_HERE / 'data' / 'sw_coeffs.nc')
 # ════════════════════════════════════════════════════════════════════════════
 
 _DEFAULTS = {
-    'surface':       {'sw_albedo': 0.15, 'skin_temperature_C': None},
+    'surface':       {'sw_albedo': 0.15},
     'gases':         {'CO2_ppm': 422.0,  'CH4_ppm': 1.9},
     'solar':         {'latitude_deg': None, 'longitude_deg': None},
     'vertical_grid': {'resolution_below_15km_km': 0.5},
@@ -191,6 +191,15 @@ def read_sounding(nc_path: str, cloud_enable: bool = False,
     if np.nanmean(T_raw[np.isfinite(T_raw)]) > 100:
         T_raw = T_raw - 273.15
 
+    # ── Surface skin temperature (optional scalar or time series) ─────────
+    skin_raw = _get(['skin_temperature', 'T_skin', 'tskin', 'tskn',
+                     'surface_skin_temperature', 'sfc_skin_temperature',
+                     'surface_temperature'])
+    if skin_raw is not None:
+        # K → °C if needed
+        if np.nanmean(skin_raw[np.isfinite(skin_raw)]) > 100:
+            skin_raw = skin_raw - 273.15
+
     sh_raw = _get(['sh', 'specific_humidity', 'q'])
     if sh_raw is None:
         # try relative humidity and convert
@@ -268,9 +277,11 @@ def read_sounding(nc_path: str, cloud_enable: bool = False,
             return arr[np.newaxis, :]   # (1, nlevels)
         return arr
 
-    p_2d  = _ensure_2d(p_raw)
-    T_2d  = _ensure_2d(T_raw)
-    sh_2d = _ensure_2d(sh_raw)
+    p_2d   = _ensure_2d(p_raw)
+    T_2d   = _ensure_2d(T_raw)
+    sh_2d  = _ensure_2d(sh_raw)
+    # skin_raw is (ntimes,) or scalar — keep as 1-D time series
+    skin_1d = np.array(skin_raw).flatten() if skin_raw is not None else None
 
     ntimes, nlevels = p_2d.shape
     # Flip level axis to ascending z if needed
@@ -285,6 +296,7 @@ def read_sounding(nc_path: str, cloud_enable: bool = False,
 
     return dict(z_km=z_km, time=time_sec,
                 p_hPa=p_2d, T_C=T_2d, sh_gg=sh_2d,
+                skin_T_C=skin_1d,
                 lat=lat, lon=lon, cloud=cloud, aerosol=aerosol)
 
 
@@ -363,12 +375,11 @@ def _run_one_profile(args):
     Returns dict of broadband fluxes on z_out grid.
     """
     (z_km, p_hPa, T_C, sh_gg, cloud_row, aerosol_row,
-     cfg, sza_deg, lw_coeffs, sw_coeffs) = args
+     skin_t, cfg, sza_deg, lw_coeffs, sw_coeffs) = args
 
     co2        = cfg['gases']['CO2_ppm']
     ch4        = cfg['gases']['CH4_ppm']
     alb        = cfg['surface']['sw_albedo']
-    skin       = cfg['surface'].get('skin_temperature_C', None)
     save_clr   = cfg['output']['save_clearsky']
     iceflag    = int(cfg.get('cloud', {}).get('iceflag', 3))
     re_liq_def = float(cfg.get('cloud', {}).get('re_liq_um_default', 10.0))
@@ -384,7 +395,8 @@ def _run_one_profile(args):
         'ch4': np.full(nlev, ch4),
         'co':  np.full(nlev, 0.15),
     }
-    T_sfc = skin if skin is not None else float(T_C[0])
+    # Skin temperature: from sounding NetCDF if present, else lowest air level
+    T_sfc = skin_t if skin_t is not None else float(T_C[0])
 
     # ── Cloud fields (level grid) ──────────────────────────────────────────
     frac_lev   = np.zeros(nlev)
@@ -627,8 +639,16 @@ def main():
         except Exception:
             sza = 90.0   # treat as nighttime on failure
 
+        # Skin temperature for this time step (from sounding or None → fallback)
+        skin_t = None
+        if snd['skin_T_C'] is not None:
+            idx = min(ti, len(snd['skin_T_C']) - 1)
+            v = float(snd['skin_T_C'][idx])
+            if np.isfinite(v):
+                skin_t = v
+
         worker_args.append((z_km, p_hPa, T_C, sh_gg, cloud_row, aerosol_row,
-                             cfg, sza, _LW_COEFFS, _SW_COEFFS))
+                             skin_t, cfg, sza, _LW_COEFFS, _SW_COEFFS))
 
     # ── Run (parallel or serial) ──────────────────────────────────────────
     results = [None] * ntimes
@@ -723,8 +743,8 @@ def main():
 
     # Surface
     out.sw_albedo           = float(cfg['surface']['sw_albedo'])
-    skin = cfg['surface']['skin_temperature_C']
-    out.skin_temperature_C  = float(skin) if skin is not None else 'from_sounding'
+    out.skin_temperature_source = 'sounding (skin_temperature variable)' \
+        if snd.get('skin_T_C') is not None else 'lowest sounding level air temperature'
 
     # Gases
     out.CO2_ppm = float(cfg['gases']['CO2_ppm'])
